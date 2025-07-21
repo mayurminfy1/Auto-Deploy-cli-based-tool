@@ -1,0 +1,4 @@
+typer[all]
+python-git
+boto3
+paramiko

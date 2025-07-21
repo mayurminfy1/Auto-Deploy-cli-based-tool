@@ -1,0 +1,29 @@
+Metadata-Version: 2.4
+Name: deploy-tool
+Version: 0.1.0
+Summary: A Vercel-like CLI tool for automated frontend deployment to AWS.
+Home-page: https://github.com/yourusername/your-repo
+Author: Your Name
+Author-email: your.email@example.com
+Classifier: Programming Language :: Python :: 3
+Classifier: License :: OSI Approved :: MIT License
+Classifier: Operating System :: OS Independent
+Classifier: Topic :: Software Development :: Build Tools
+Classifier: Topic :: System :: Installation/Setup
+Requires-Python: >=3.7
+Description-Content-Type: text/markdown
+Requires-Dist: typer[all]
+Requires-Dist: python-git
+Requires-Dist: boto3
+Requires-Dist: paramiko
+Dynamic: author
+Dynamic: author-email
+Dynamic: classifier
+Dynamic: description
+Dynamic: description-content-type
+Dynamic: home-page
+Dynamic: requires-dist
+Dynamic: requires-python
+Dynamic: summary
+
+# my minfy capstone proj

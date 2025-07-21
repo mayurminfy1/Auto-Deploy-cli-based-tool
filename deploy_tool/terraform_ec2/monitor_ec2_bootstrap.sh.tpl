@@ -1,0 +1,14 @@
+#!/bin/bash
+sudo yum update -y
+sudo yum install -y docker
+sudo service docker start
+sudo usermod -a -G docker ec2-user
+
+# Install Docker Compose v2
+curl -L https://github.com/docker/compose/releases/download/v2.6.1/docker-compose-`uname -s`-`uname -m` -o /usr/local/bin/docker-compose
+chmod +x /usr/local/bin/docker-compose
+
+# Create monitoring folders
+mkdir -p /home/ec2-user/monitoring
+
+# Docker Compose will be moved later via SSH from Python

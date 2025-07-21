@@ -1,0 +1,18 @@
+{
+  "project_name": "",
+  "repo_url": "NOT_SET",
+  "region": "ap-south-1",
+  "container_port": 3000,
+  "aws_profile": "default",
+  "environments": {
+    "development": {
+      "build_command": "npm run build",
+      "env_vars": {}
+    },
+    "production": {
+      "build_command": "npm run build",
+      "env_vars": {}
+    }
+  },
+  "deployments": []
+}

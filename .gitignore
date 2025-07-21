@@ -1,0 +1,56 @@
+# Python bytecode and environment files
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+.venv
+env/
+venv/
+pip-log.txt
+pip-delete-this-arg.txt
+.history/
+.pytest_cache/
+.mypy_cache/
+.dmypy.json
+
+# Node.js / Frontend build artifacts (if generated locally during development)
+# This is general, apply only if these exist in your main tool's dev environment
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-store/
+dist/
+build/
+
+# Terraform generated files and state
+.terraform/             # Terraform's state and plugin cache directory
+*.tfplan                # Terraform plan files
+*.tfstate               # Local Terraform state file
+*.tfstate.backup        # Local Terraform state backup
+crash.log               # Terraform crash logs
+.terraform.lock.hcl     # Terraform dependency lock file (can be committed if managing versions)
+terraform.tfvars.json   # Variable definitions, typically generated/local
+
+# Workspace for cloned repositories and temporary files created by your tool
+workspace/              # This is where your tool will clone repos and put temp TF files. MUST BE IGNORED.
+
+# IDE and OS specific files
+.DS_Store               # macOS directory service files
+Thumbs.db               # Windows thumbnail cache
+*.sublime-project       # Sublime Text project files
+*.sublime-workspace     # Sublime Text workspace files
+.idea/                  # IntelliJ/PyCharm project files
+*.swp                   # Vim swap files
+*~                      # Emacs backup files
+
+# Compiled binaries (if your project compiles anything)
+*.exe
+*.dll
+*.so
+*.dylib
+*.o
+
+# Log files
+*.log
