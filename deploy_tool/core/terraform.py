@@ -87,30 +87,35 @@ def apply_terraform(aws_profile: str = "mayur-sso", project_name: str = "default
         typer.echo(f"An unexpected error occurred during Terraform apply: {e}")
         raise
 
-# Function to get Terraform output (e.g., application URL)
-def get_terraform_output(aws_profile: str = "mayur-sso") -> str:
+# --- THIS FUNCTION HAS BEEN CORRECTED ---
+# It now accepts an 'output_name' argument to be more flexible.
+def get_terraform_output(aws_profile: str = "mayur-sso", output_name: str = "app_url") -> str:
     env = os.environ.copy()
     env["AWS_PROFILE"] = aws_profile
 
-    typer.echo(f"Retrieving Terraform outputs from {TF_BASE_DIR}...")
+    typer.echo(f"Retrieving Terraform output '{output_name}' from {TF_BASE_DIR}...")
     try:
-        app_url = subprocess.check_output(
-            ["terraform", "output", "-raw", "app_url"],
+        # The output name is now a dynamic parameter
+        output_value = subprocess.check_output(
+            ["terraform", "output", "-raw", output_name],
             cwd=TF_BASE_DIR,
             env=env,
             text=True
         ).strip()
 
-        if not app_url:
-            typer.echo("'app_url' output not found or is empty in Terraform state.")
-            raise typer.Exit(code=1)
-        typer.echo(f"Retrieved app_url: {app_url}")
-        return app_url
+        if not output_value:
+            typer.echo(f"Warning: '{output_name}' output not found or is empty in Terraform state.")
+            # Return an empty string instead of exiting, so the caller can handle it
+            return ""
+        
+        typer.echo(f"Retrieved {output_name}: {output_value}")
+        return output_value
     except subprocess.CalledProcessError as e:
-        typer.echo(f"Failed to get Terraform output: {e.stderr}")
-        raise typer.Exit(code=1)
+        typer.echo(f"Failed to get Terraform output '{output_name}': {e.stderr}")
+        # Return an empty string on failure
+        return ""
     except Exception as e:
-        typer.echo(f"An unexpected error occurred while getting Terraform output: {e}")
+        typer.echo(f"An unexpected error occurred while getting Terraform output '{output_name}': {e}")
         raise
 
 # Function to destroy Terraform-managed infrastructure

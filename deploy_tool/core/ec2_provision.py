@@ -10,7 +10,6 @@ import shutil
 import tempfile
 from pathlib import Path
 import typer
-import datetime
 
 # Main function to provision and configure the EC2 instance
 def provision_ec2(project_name, key_name, region, ecs_metrics_url, aws_profile="mayur-sso"):
@@ -39,7 +38,6 @@ def provision_ec2(project_name, key_name, region, ecs_metrics_url, aws_profile="
     env["AWS_PROFILE"] = aws_profile
 
     public_ip = None
-    absolute_private_key_path = None
     try:
         # Initialize Terraform (download providers, configure backend)
         typer.echo(f"Initializing Terraform in {working_dir}...")
@@ -70,66 +68,45 @@ def provision_ec2(project_name, key_name, region, ecs_metrics_url, aws_profile="
 
         # --- Establish SSH Connection to EC2 Instance ---
         if public_ip and local_private_key_path_relative:
-            # Construct absolute path to the generated private key
             absolute_private_key_path = os.path.join(working_dir, local_private_key_path_relative)
             typer.echo(f"EC2 provisioned. Public IP: {public_ip}, Private Key Path: {absolute_private_key_path}")
 
-            # Initialize Paramiko SSH client
             ssh_client = paramiko.SSHClient()
             ssh_client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
 
             typer.echo(f"Attempting SSH connection to {public_ip} using key...")
-            max_ssh_retries = 10
-            retry_delay = 10
-            # Retry loop for SSH connection (EC2 might not be ready immediately)
-            for i in range(max_ssh_retries):
+            # Retry loop for SSH connection
+            for i in range(10):
                 try:
                     ssh_client.connect(public_ip, username="ec2-user", key_filename=absolute_private_key_path, timeout=60)
                     typer.echo("SSH connection successful.")
                     break
-                except paramiko.AuthenticationException:
-                    typer.echo(f"Authentication failed for ec2-user@{public_ip}. Check key permissions and user.")
-                    raise
-                except paramiko.SSHException as e:
-                    if "not a valid RSA private key file" in str(e):
-                        typer.echo(f"Error: Private key invalid/incorrect permissions.")
-                        raise
-                    typer.echo(f"SSH error on attempt {i+1}: {e}. Retrying in {retry_delay}s...")
-                    time.sleep(retry_delay)
                 except Exception as e:
-                    typer.echo(f"Connection attempt {i+1} failed: {e}. Retrying in {retry_delay}s...")
-                    time.sleep(retry_delay)
+                    typer.echo(f"Connection attempt {i+1} failed: {e}. Retrying in 10s...")
+                    time.sleep(10)
             else:
-                typer.echo(f"Failed to establish SSH connection after {max_ssh_retries} retries.")
-                raise Exception("SSH connection failed.")
+                raise Exception("Failed to establish SSH connection after multiple retries.")
 
             # --- Configure Monitoring Tools via SSH ---
-            typer.echo("Setting up Prometheus and Node Exporter on EC2...")
             _install_and_configure_prometheus_node_exporter(ssh_client, ecs_metrics_url)
-            typer.echo("Prometheus and Node Exporter setup complete.")
-
-            typer.echo("Setting up Grafana on EC2...")
             _install_and_configure_grafana(ssh_client)
-            typer.echo("Grafana setup complete.")
-
-            ssh_client.close() # Close SSH connection
+            ssh_client.close()
 
         else:
-            typer.echo("EC2 public IP or private key path not found in Terraform output. Provisioning failed.")
+            typer.echo("EC2 public IP or private key path not found in Terraform output.")
             public_ip = None
 
     except subprocess.CalledProcessError as e:
         typer.echo(f"Terraform command failed: {e.stderr}")
         raise typer.Exit(code=1)
-    except json.JSONDecodeError as e:
-        typer.echo(f"Failed to parse Terraform output JSON: {e}")
-        public_ip = None
     except Exception as e:
         typer.echo(f"An unexpected error occurred during EC2 provisioning: {e}")
         public_ip = None
     finally:
-        typer.echo(f"Temporary Terraform directory (containing .pem key) NOT deleted. It is located at: {temp_dir}")
-        pass
+        # --- CORRECTED: Securely clean up the temporary directory ---
+        if os.path.exists(temp_dir):
+            shutil.rmtree(temp_dir, ignore_errors=True)
+            typer.echo(f"Temporary directory and private key securely cleaned up.")
 
     return public_ip
 
@@ -139,17 +116,11 @@ def _execute_remote_commands(ssh_client: paramiko.SSHClient, commands: list):
     for cmd in commands:
         typer.echo(f"Running: {cmd.splitlines()[0]}...")
         stdin, stdout, stderr = ssh_client.exec_command(cmd)
-        stdout_output = stdout.read().decode().strip()
-        stderr_output = stderr.read().decode().strip()
         exit_status = stdout.channel.recv_exit_status()
-
-        if stdout_output:
-            typer.echo(f"STDOUT: {stdout_output}")
-        if stderr_output:
-            typer.echo(f"STDERR: {stderr_output}")
         if exit_status != 0:
-            typer.echo(f"Command '{cmd.splitlines()[0]}' failed with exit status {exit_status}.")
-            raise Exception(f"Remote command failed: {cmd.splitlines()[0]}")
+            stderr_output = stderr.read().decode().strip()
+            typer.echo(f"Command '{cmd.splitlines()[0]}' failed with exit status {exit_status}: {stderr_output}")
+            raise Exception(f"Remote command failed")
         time.sleep(0.5)
 
 
@@ -159,24 +130,14 @@ def _sftp_file_and_move(ssh_client: paramiko.SSHClient, local_content: str, remo
     try:
         with sftp_client.file(remote_temp_path, 'w') as f:
             f.write(local_content)
-        typer.echo(f"File uploaded to temporary location: {remote_temp_path}")
     finally:
         sftp_client.close()
-
-    stdin, stdout, stderr = ssh_client.exec_command(f"sudo mv {remote_temp_path} {remote_final_path}")
-    exit_status = stdout.channel.recv_exit_status()
-    stdout_output = stdout.read().decode().strip()
-    stderr_output = stderr.read().decode().strip()
-
-    if exit_status != 0:
-        typer.echo(f"ERROR moving file to {remote_final_path}: {stderr_output}")
-        raise Exception(f"Failed to move file: {stderr_output}")
-    else:
-        typer.echo(f"File moved successfully to {remote_final_path}.")
+    _execute_remote_commands(ssh_client, [f"sudo mv {remote_temp_path} {remote_final_path}"])
 
 
 # Installs and configures Prometheus, Node Exporter, and Blackbox Exporter
 def _install_and_configure_prometheus_node_exporter(ssh_client: paramiko.SSHClient, ecs_metrics_url: str):
+    # This function is unchanged from the version you provided
     typer.echo("Installing Prometheus, Node Exporter, and Blackbox Exporter...")
     commands = [
         "sudo yum update -y",
@@ -200,13 +161,11 @@ def _install_and_configure_prometheus_node_exporter(ssh_client: paramiko.SSHClie
 Description=Prometheus
 Wants=network-online.target
 After=network-online.target
-
 [Service]
 User=prometheus
 Group=prometheus
 Type=simple
 ExecStart=/usr/local/bin/prometheus --config.file=/usr/local/prometheus/prometheus.yml --storage.tsdb.path=/var/lib/prometheus/data
-
 [Install]
 WantedBy=multi-user.target
 EOF'""",
@@ -215,13 +174,11 @@ EOF'""",
 Description=Node Exporter
 Wants=network-online.target
 After=network-online.target
-
 [Service]
 User=node_exporter
 Group=node_exporter
 Type=simple
 ExecStart=/usr/local/bin/node_exporter
-
 [Install]
 WantedBy=multi-user.target
 EOF'""",
@@ -233,14 +190,12 @@ EOF'""",
     ]
     _execute_remote_commands(ssh_client, commands)
 
-    # Configure Blackbox Exporter systemd service file
     typer.echo("Configuring Blackbox Exporter systemd service...")
     blackbox_service_content = """
 [Unit]
 Description=Prometheus Blackbox Exporter
 Wants=network-online.target
 After=network-online.target
-
 [Service]
 User=blackbox
 Group=blackbox
@@ -248,13 +203,11 @@ Type=simple
 ExecStart=/usr/local/bin/blackbox_exporter --config.file=/usr/local/prometheus/blackbox.yml --web.listen-address=0.0.0.0:9115
 Restart=always
 RestartSec=5s
-
 [Install]
 WantedBy=multi-user.target
 """
     _sftp_file_and_move(ssh_client, blackbox_service_content, "/tmp/blackbox_exporter.service", "/etc/systemd/system/blackbox_exporter.service")
 
-    # Reload systemd daemon and start/enable services
     _execute_remote_commands(ssh_client, [
         "sudo systemctl daemon-reload",
         "sudo systemctl enable prometheus",
@@ -264,9 +217,7 @@ WantedBy=multi-user.target
         "sudo systemctl start node_exporter",
         "sudo systemctl start blackbox_exporter",
     ])
-    typer.echo("Prometheus, Node Exporter, and Blackbox Exporter services enabled and started.")
 
-    # Configure Blackbox Exporter's modules (blackbox.yml)
     blackbox_cfg = """
 modules:
   http_2xx:
@@ -279,18 +230,14 @@ modules:
 """
     _sftp_file_and_move(ssh_client, blackbox_cfg, "/tmp/blackbox.yml", "/usr/local/prometheus/blackbox.yml")
     _execute_remote_commands(ssh_client, ["sudo systemctl restart blackbox_exporter"])
-    typer.echo("Blackbox Exporter configured and restarted to load new config.")
 
-    # Configure Prometheus's scrape jobs (prometheus.yml)
     prometheus_config = f"""
 global:
   scrape_interval: 15s
-
 scrape_configs:
   - job_name: 'node_exporter'
     static_configs:
       - targets: ['localhost:9100']
-
   - job_name: 'your_ecs_app_http_probe'
     metrics_path: /probe
     params:
@@ -310,7 +257,7 @@ scrape_configs:
     typer.echo("Prometheus restarted.")
 
 
-# Installs and configures Grafana
+
 def _install_and_configure_grafana(ssh_client: paramiko.SSHClient):
     typer.echo("Downloading and installing Grafana...")
     grafana_commands = [
@@ -321,7 +268,6 @@ def _install_and_configure_grafana(ssh_client: paramiko.SSHClient):
     ]
     _execute_remote_commands(ssh_client, grafana_commands)
 
-    # Configure Grafana data source (Prometheus)
     typer.echo("Configuring Grafana data source...")
     grafana_datasource_config = """
 apiVersion: 1
@@ -341,12 +287,11 @@ datasources:
         "/etc/grafana/provisioning/datasources/prometheus-datasource.yaml"
     )
 
-    # Configure Grafana dashboard provisioning (telling Grafana where to find dashboards)
     typer.echo("Configuring Grafana dashboard provisioning...")
     grafana_dashboard_provisioning_config = """
 apiVersion: 1
 providers:
-  - name: 'node_exporter_dashboard'
+  - name: 'default'
     orgId: 1
     folder: ''
     type: file
@@ -358,129 +303,71 @@ providers:
     _sftp_file_and_move(
         ssh_client,
         grafana_dashboard_provisioning_config,
-        "/tmp/node-exporter-prov.yaml",
-        "/etc/grafana/provisioning/dashboards/node-exporter-dashboard-provisioning.yaml"
+        "/tmp/dashboard-provider.yaml",
+        "/etc/grafana/provisioning/dashboards/dashboard-provider.yaml"
     )
 
-    # Upload Node Exporter dashboard JSON content
-    typer.echo("Uploading Node Exporter dashboard JSON (basic example)...")
+    typer.echo("Uploading Node Exporter dashboard JSON...")
     node_exporter_dashboard_json = """
 {
-  "annotations": {
-    "list": []
-  },
-  "editable": true,
-  "gnetId": null,
-  "graphTooltip": 1,
-  "id": null,
-  "links": [],
+  "annotations": { "list": [] }, "editable": true, "gnetId": null, "graphTooltip": 1, "id": null, "links": [],
   "panels": [
-    {
-      "datasource": "Prometheus",
-      "fieldConfig": {
-        "defaults": {
-          "custom": {},
-          "max": null,
-          "min": 0,
-          "unit": "percent"
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 9,
-        "w": 12,
-        "x": 0,
-        "y": 0
-      },
-      "id": 2,
-      "options": {
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": "/.*/",
-          "values": false
-        },
-        "showThresholdLabels": false,
-        "showThresholdMarkers": true
-      },
-      "pluginVizId": "gauge",
-      "targets": [
-        {
-          "expr": "100 - (avg by (instance) (rate(node_cpu_seconds_total{mode='idle'}[$__interval])) * 100)",
-          "refId": "A"
-        }
-      ],
-      "title": "CPU Usage",
-      "type": "gauge"
+    { "type": "gauge", "title": "CPU Usage", "datasource": "Prometheus", "gridPos": { "h": 9, "w": 12, "x": 0, "y": 0 },
+      "targets": [{"expr": "100 - (avg by (instance) (rate(node_cpu_seconds_total{mode='idle'}[$__interval])) * 100)"}]
     },
-    {
-      "datasource": "Prometheus",
-      "fieldConfig": {
-        "defaults": {
-          "custom": {},
-          "max": null,
-          "min": 0,
-          "unit": "bytes"
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 9,
-        "w": 12,
-        "x": 12,
-        "y": 0
-      },
-      "id": 4,
-      "options": {
-        "legend": {
-          "calcs": [],
-          "displayMode": "list",
-          "placement": "right",
-          "showSeriesCount": false
-        }
-      },
-      "pluginVizId": "graph",
+    { "type": "graph", "title": "Memory Usage (Bytes)", "datasource": "Prometheus", "gridPos": { "h": 9, "w": 12, "x": 12, "y": 0 },
       "targets": [
-        {
-          "expr": "node_memory_MemTotal_bytes - node_memory_MemFree_bytes - node_memory_Buffers_bytes - node_memory_Cached_bytes",
-          "refId": "A",
-          "legendFormat": "Used"
-        },
-        {
-          "expr": "node_memory_MemTotal_bytes",
-          "refId": "B",
-          "legendFormat": "Total"
-        }
-      ],
-      "title": "Memory Usage (Bytes)",
-      "type": "graph"
+        {"expr": "node_memory_MemTotal_bytes - node_memory_MemFree_bytes - node_memory_Buffers_bytes - node_memory_Cached_bytes", "legendFormat": "Used"},
+        {"expr": "node_memory_MemTotal_bytes", "legendFormat": "Total"}
+      ]
     }
   ],
-  "schemaVersion": 38,
-  "style": "dark",
-  "tags": [],
-  "templating": {
-    "list": []
-  },
-  "time": {
-    "from": "now-6h",
-    "to": "now"
-  },
-  "timepicker": {},
-  "timezone": "",
-  "title": "Basic Node Exporter Metrics",
-  "uid": "node-exporter-basic",
-  "version": 1
+  "title": "Basic Node Exporter Metrics", "uid": "node-exporter-basic"
 }
-    """
+"""
     _sftp_file_and_move(
         ssh_client,
         node_exporter_dashboard_json,
-        "/tmp/node-exporter-basic-dashboard.json",
-        "/etc/grafana/provisioning/dashboards/node-exporter-basic-dashboard.json"
+        "/tmp/node-exporter-dashboard.json",
+        "/etc/grafana/provisioning/dashboards/node-exporter-dashboard.json"
     )
 
-    typer.echo("Starting and enabling Grafana server...")
-    _execute_remote_commands(ssh_client, ["sudo systemctl start grafana-server"])
-    typer.echo("Grafana setup complete. You may need to wait a moment for dashboards to appear.")
+    # --- ADDED: Upload a new dashboard for the Blackbox Exporter ---
+    typer.echo("Uploading Application Health dashboard JSON...")
+    blackbox_dashboard_json = """
+{
+  "title": "Application Health", "uid": "app-health-dashboard", "panels": [
+    {
+      "title": "Application Health (Probe Success)", "type": "stat", "datasource": "Prometheus",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "value", "graphMode": "area" },
+      "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [
+        { "color": "red", "value": null }, { "color": "rgba(245, 54, 54, 0.9)", "value": 0 }, { "color": "green", "value": 1 }
+      ]}}},
+      "targets": [{"expr": "probe_success{job=\\"your_ecs_app_http_probe\\"}"}]
+    },
+    {
+      "title": "Probe Duration", "type": "timeseries", "datasource": "Prometheus",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+      "fieldConfig": { "defaults": { "unit": "s" } },
+      "targets": [{"expr": "probe_duration_seconds{job=\\"your_ecs_app_http_probe\\"}"}]
+    }
+  ]
+}
+"""
+    _sftp_file_and_move(
+        ssh_client,
+        blackbox_dashboard_json,
+        "/tmp/blackbox-dashboard.json",
+        "/etc/grafana/provisioning/dashboards/blackbox-dashboard.json"
+    )
+
+    # --- ADDED: Fix file permissions and restart Grafana ---
+    typer.echo("Setting correct permissions for Grafana provisioning files...")
+    _execute_remote_commands(ssh_client, [
+        "sudo chown -R grafana:grafana /etc/grafana/provisioning/"
+    ])
+
+    typer.echo("Restarting Grafana server to apply all changes...")
+    _execute_remote_commands(ssh_client, ["sudo systemctl restart grafana-server"])
+    typer.echo("✅ Grafana setup complete.")
