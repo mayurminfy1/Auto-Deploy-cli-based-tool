@@ -1,0 +1,11 @@
+[
+  {
+    "timestamp": "2025-08-15T17:14:59.014880",
+    "action": "run",
+    "status": "success",
+    "project_name": "mayur-recipe-finder-react",
+    "image_uri": "034138043057.dkr.ecr.ap-south-1.amazonaws.com/mayur-recipe-finder-react:20250815-170649",
+    "public_app_url": "http://mayur-lb-mayur-recipe-fin-1725978912.ap-south-1.elb.amazonaws.com",
+    "monitor_ec2_ip": "13.201.0.112"
+  }
+]
